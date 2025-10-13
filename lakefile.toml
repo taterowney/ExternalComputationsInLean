@@ -1,0 +1,25 @@
+name = "ExternalComputationsInLean"
+version = "0.1.0"
+defaultTargets = ["externalcomputationsinlean"]
+
+[[lean_lib]]
+name = "ExternalComputationsInLean"
+
+[[require]]
+name = "batteries"
+scope = "leanprover-community"
+rev = "v4.22.0"
+
+[[require]]
+name = "mathlib"
+scope = "leanprover-community"
+rev = "v4.22.0"
+
+[[require]]
+name = "Cli"
+git = "https://github.com/leanprover/lean4-cli"
+rev = "v4.22.0+patch1"
+
+[[lean_exe]]
+name = "externalcomputationsinlean"
+root = "Main"
