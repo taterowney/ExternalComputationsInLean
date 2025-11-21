@@ -20,6 +20,11 @@ name = "Cli"
 git = "https://github.com/leanprover/lean4-cli"
 rev = "v4.22.0+patch1"
 
+[[require]]
+name = "Canonical"
+scope = "chasenorman"
+rev = "v4.22.0"
+
 [[lean_exe]]
 name = "externalcomputationsinlean"
 root = "Main"
