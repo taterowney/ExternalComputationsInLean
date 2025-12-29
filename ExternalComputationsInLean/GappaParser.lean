@@ -316,22 +316,6 @@ def testParse (input : String) : TermElabM Expr := do
 
   elabDSL out.stxStack.back
 
--- #eval testParse test_input2
--- syntax (name := parse_external_cmd) "#parse_external " term : command
-
--- @[command_elab parse_external_cmd]
--- def elabParseExternal : CommandElab := fun stx => do
---   liftTermElabM do
---     let s ← elabTerm stx[1] (some q(String))
-
---     -- logInfo m!"Elaborated to: {← quote_expr s}"
---     let Expr.lit (.strVal input) := s | throwError "expected string literal"
---     -- let input := "let f1 := false in true"
---     let expr ← testParse input
---     let expr ← instantiateMVars expr
---     Meta.check expr
---     logInfo m!"{expr} : {← inferType expr}"
---     logInfo m!"Quoted: {← quote_expr expr}"
 
 syntax (name := parse_external_cmd) "parse_external " term : term
 

@@ -38,6 +38,27 @@ partial def replaceUnknownIdents (stx : Syntax) : TermElabM (Syntax) := do
   return out
 
 
+/-- Loop through a Syntax object and replace unknown identifiers with holes (elaborated to synthetic mvars). Returns a list of the names of the replaced identifiers. -/
+partial def collectAndReplaceUnknownIdents (stx : Syntax) : TermElabM (Syntax × List Name) := do
+  if stx.isIdent then
+    let tryResolve : TermElabM Syntax := do
+      let res ← Term.resolveId? stx
+      if (!res.isSome) then
+        throwError "Unresolved identifier"
+      pure stx
+    try
+      return ⟨(← tryResolve), []⟩
+    catch _ =>
+      return (Lean.mkHole stx, [stx.getId])
+  let mut out := stx
+  let mut names : List Name := []
+  for (c, i) in List.zipIdx <| stx.getArgs.toList do
+    let (c', newNames) ← collectAndReplaceUnknownIdents c
+    out := out.setArg i c'
+    names := names ++ newNames
+  return (out, names)
+
+
 /-- Elaborate `stx` in the current `MVarContext`. If given, the `expectedType` will be used to help
 elaboration and then a `TypeMismatchError` will be thrown if the elaborated type doesn't match.  -/
 def TermElabM.elabTermEnsuringType (stx : Syntax) (expectedType? : Option Expr) (mayPostpone := false) : TermElabM Expr := do
@@ -147,3 +168,14 @@ def classifyMVars (stx : Syntax) (expected? : Option Expr := none)
         | MetavarKind.syntheticOpaque => synth := synth.push (m, none)
         | _                           => natural := natural.push m
   pure (e, holeMVars.toArray, synth, natural)
+
+
+
+partial def Lean.Syntax.printdbg (stx : Syntax) : String :=
+  match stx with
+  | .ident _ name _ _ => s!"(mkIdent `{name})"
+  | .atom _ val => s!"(Lean.Syntax.atom default \"{val.replace "\"" "\\\""}\")"
+  | .node _ k args =>
+    let argsStr := args.map (fun a => printdbg a) |>.toList
+    s!"(Lean.Syntax.node default `{k} #{argsStr})"
+  | .missing => "Missing"

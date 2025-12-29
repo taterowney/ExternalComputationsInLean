@@ -8,21 +8,21 @@ import Mathlib.Data.Real.GoldenRatio
 
 
 
--- Bounds on square roots
-example : √2 * 1000 ≤ 1415 := by
-  gappa
+-- -- Bounds on square roots
+-- example : √2 * 1000 ≤ 1415 := by
+--   gappa
 
-example : √3 * 1024 ≤ 1774 := by
-  gappa
+-- example : √3 * 1024 ≤ 1774 := by
+--   gappa
 
--- Bounding the golden ratio
-open goldenRatio in
-example : 16 ≤ φ * 10 ∧ φ * 10 ≤ 17 := by
-  unfold goldenRatio
-  constructor
-  · suffices (1 + √5) / 2 * 10 ≥ 16 by exact this
-    gappa
-  gappa
+-- -- Bounding the golden ratio
+-- open goldenRatio in
+-- example : 16 ≤ φ * 10 ∧ φ * 10 ≤ 17 := by
+--   unfold goldenRatio
+--   constructor
+--   · suffices (1 + √5) / 2 * 10 ≥ 16 by exact this
+--     gappa
+--   gappa
 
 
 

@@ -2,7 +2,7 @@ import Lean
 import Lean.Meta.Tactic.TryThis
 import Qq.Macro
 import Mathlib.Data.Real.Basic
-import ExternalComputationsInLean.Pattern
+import ExternalComputationsInLean.Utils.Pattern
 
 
 open Lean Meta Tactic Elab Meta Term Tactic Expr Lean.Meta.Tactic.TryThis
