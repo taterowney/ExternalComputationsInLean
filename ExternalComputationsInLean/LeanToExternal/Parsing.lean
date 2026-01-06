@@ -19,8 +19,10 @@ open Std.Internal Parser Command Syntax Quote
 
 
 /-- Creates a custom syntax declaration based on the patterns given; identifiers are assumed to refer to bound variable names not syntax categories. Lots borrowed from `elabSyntax` function in `Lean.Elab.Syntax` -/
-def declareExternalSyntax (cat : Name) (patterns : Array Syntax) : CommandElabM SyntaxNodeKind := do
+def declareExternalSyntax (cat : Name) (patterns : Array Syntax) : CommandElabM (SyntaxNodeKind × List Name × List Name) := do
   let mut syntaxParts : Array Syntax := #[]
+  let mut variableNames : List Name := []
+  let mut binderNames : List Name := []
   for p in patterns do
     match p with
     | .node _ k args =>
@@ -29,9 +31,16 @@ def declareExternalSyntax (cat : Name) (patterns : Array Syntax) : CommandElabM 
         syntaxParts := syntaxParts.push p
       | `Lean.Parser.Syntax.cat =>
         match args.toList with
-        | (.ident _ _ _ _ ) :: _ =>
+        | (.ident _ raw _ _ ) :: _ =>
           syntaxParts := syntaxParts.push (mkNode `Lean.Parser.Syntax.cat #[mkIdent cat])
+          variableNames := (raw.toName) :: variableNames
         | _ => throwError m!"Unsupported cat args: {args}"
+      | `stx.pseudo.antiquot =>
+        match args.toList with
+        | _ :: _ :: (.ident _ raw _ _ ) :: _ =>
+          syntaxParts := syntaxParts.push (mkNode `Lean.Parser.Syntax.cat #[mkIdent `ident])
+          binderNames := (raw.toName) :: binderNames
+        | _ => throwError m!"Unsupported antiquot args: {args}"
       | _ => throwError m!"Unsupported syntax node kind: {k}"
     | x => throwError m!"Unsupported syntax part: {x}"
 
@@ -63,4 +72,4 @@ def declareExternalSyntax (cat : Name) (patterns : Array Syntax) : CommandElabM 
         ParserDescr.node $(quote stxNodeKind) $(quote prec) $val)
 
   elabCommand d
-  return stxNodeKind
+  return (stxNodeKind, variableNames, binderNames)

@@ -179,3 +179,21 @@ partial def Lean.Syntax.printdbg (stx : Syntax) : String :=
     let argsStr := args.map (fun a => printdbg a) |>.toList
     s!"(Lean.Syntax.node default `{k} #{argsStr})"
   | .missing => "Missing"
+
+
+
+
+partial def Syntax.findAndReplaceM {m : Type → Type} [Monad m] (fn : Syntax → m (Option (Syntax × List Name))) : Syntax → m (Syntax × List Name)
+  | stx@(Lean.Syntax.node info kind args) => do
+    match (← fn stx) with
+    | some stx => return stx
+    | none     =>
+        let (args, names) := (← args.mapM (Syntax.findAndReplaceM fn)).unzip
+        return (Lean.Syntax.node info kind args, names.toList.flatten)
+  | stx => do
+    let o ← fn stx
+    return o.getD (stx, [])
+def TSyntax.findAndReplaceM {k : Name} {m : Type → Type} [Monad m] (fn : Syntax → m (Option (Syntax × List Name))) (stx : TSyntax k) : m (TSyntax k × List Name) :=
+  do
+    let (stx, names) ← Syntax.findAndReplaceM fn stx.1
+    return (TSyntax.mk stx, names)

@@ -24,26 +24,6 @@ open Lean.Parser.Term hiding macroArg
 open Lean.Parser.Command
 
 
-
-
-partial def Syntax.findAndReplaceM {m : Type → Type} [Monad m] (fn : Syntax → m (Option (Syntax × List Name))) : Syntax → m (Syntax × List Name)
-  | stx@(Lean.Syntax.node info kind args) => do
-    match (← fn stx) with
-    | some stx => return stx
-    | none     =>
-        let (args, names) := (← args.mapM (Syntax.findAndReplaceM fn)).unzip
-        return (Lean.Syntax.node info kind args, names.toList.flatten)
-  | stx => do
-    let o ← fn stx
-    return o.getD (stx, [])
-def TSyntax.findAndReplaceM {k : Name} {m : Type → Type} [Monad m] (fn : Syntax → m (Option (Syntax × List Name))) (stx : TSyntax k) : m (TSyntax k × List Name) :=
-  do
-    let (stx, names) ← Syntax.findAndReplaceM fn stx.1
-    return (TSyntax.mk stx, names)
-
-
-
-
 /-- Convert a `stx` node into a `macroArg` node for use in `expandMacroArg`. Identifiers, which are usually interpreted as parser categories, will instead be converted to the names of the bound variables, with the category being the supplied name (i.e. `x` => `x:mycategory`). -/
 def toMacroArg (stx : TSyntax `stx) (cat : Name) : CommandElabM (TSyntax `Lean.Parser.Command.macroArg) := do
   -- Replace any identifiers (which are treated as parserCategories) with the category `cat`
@@ -54,6 +34,12 @@ def toMacroArg (stx : TSyntax `stx) (cat : Name) : CommandElabM (TSyntax `Lean.P
       | (.ident _ name _ _) :: rest =>
         let new_children := (mkIdent cat).raw :: rest
         return some ((Lean.Syntax.node default `Lean.Parser.Syntax.cat new_children.toArray), [name.toName])
+      | _ => return none
+    | Lean.Syntax.node _ `stx.pseudo.antiquot children =>
+      match children.toList with
+      | _ :: _ :: (.ident _ name _ _) :: _ =>
+        let new_children := [mkIdent cat].toArray
+        return some ((Lean.Syntax.node default `Lean.Parser.Syntax.cat new_children), [name.toName])
       | _ => return none
     | _ => return none) stx
 
@@ -72,20 +58,27 @@ def declareExternalElaborator (kind : SyntaxNodeKind) (cat : Name) (patterns : A
   let (_, patArgs) := (← asMacroArgs.mapM expandMacroArg).unzip -- Create antiquoted patterns that match them
 
   let equiv ← getExternalEquivalence target
-  let vars ← match equiv with
-  | none => throwError m!"No external equivalence found for '{target.name}'"
-  | some e => pure e.variables
-  let vars_stx : List Syntax ← vars.mapM (fun n => do
+  let ⟨vars, binderNames⟩ ← match equiv with
+  | none => throwError m!"Internal assertion failed: no external equivalence found for '{target.name}'"
+  | some e => pure (e.variables, e.binderNames)
+
+  let vars_stx : List Term ← vars.mapM (fun n => do
     let as_name : TSyntax `term := mkStrLit n.toString
     let as_ident : TSyntax `term := mkIdent n
-    `(Prod.mk ($as_name).toName $as_ident))
-  let vars_stx_array : TSepArray `term "," := TSepArray.mk vars_stx.toArray
-  -- logInfo m!"{vars_stx_array.elemsAndSeps}"
+    `(Prod.mk ($as_name).toName $as_ident)
+    )
+  let vars_stx_array : TSepArray `term "," := TSepArray.ofElems vars_stx.toArray
+
+  let binders_stx : List Term ← binderNames.mapM (fun n => do
+    let as_name : TSyntax `term := mkStrLit n.toString
+    let as_ident : TSyntax `term := mkIdent n
+    `(Prod.mk ($as_name).toName $as_ident)
+    )
+  let binders_stx_array : TSepArray `term "," := TSepArray.ofElems binders_stx.toArray
 
   let pat : TSyntax `term := ⟨mkNode kind patArgs⟩
   let target : TSyntax `term := mkStrLit target.name.toString
-  logInfo m!"{← `(([ $vars_stx_array,* ] : List (Name × Syntax)))}"
-  let alts : TSyntaxArray ``matchAlt := #[← `(matchAltExpr| | `($pat) => pure ( ( ⟨($target).toName⟩ : ExternalEquivalenceKey), ([ $vars_stx_array,* ] : List (Name × Syntax)) ) )] -- The core of our match statement. We store the details about what we're elaborating to in an enivonment extension to avoid having to quote everything here.
+  let alts : TSyntaxArray ``matchAlt := #[← `(matchAltExpr| | `($pat) => pure ( ( ⟨($target).toName⟩ : ExternalEquivalenceKey), ([ $vars_stx_array,* ] : List (Name × Syntax)), ([ $binders_stx_array,* ] : List (Name × Syntax)) ) )] -- The core of our match statement. We store the details about what we're elaborating to in an enivonment extension to avoid having to quote everything here.
 
   let mut k := kind
   if k.isStr && k.getString! == "antiquot" then
@@ -93,15 +86,6 @@ def declareExternalElaborator (kind : SyntaxNodeKind) (cat : Name) (patterns : A
   if k == choiceKind then
     throwErrorAt alts[0]!
       "invalid alternative, multiple interpretations for pattern (solution: specify node kind using (kind := ...) ...`)"
-
-  -- TODO: carry over attributes and maybe other stuff like doc comments? idk if this is necessary
-  -- let attrs? : Option (TSepArray `Lean.Parser.Term.attrInstance ",") := none
-  -- let attrKind := default
-  -- let mkAttrs (kind : Name) : CommandElabM (TSyntaxArray ``attrInstance) := do
-  --   let attr ← `(attrInstance| $attrKind:attrKind $(mkIdent kind):ident $(← mkIdentFromRef k):ident)
-  --   pure <| match attrs? with
-  --     | some attrs => attrs.getElems.push attr
-  --     | none => #[attr]
 
   -- magic (from Lean.Elab.ElabRules)
   let alts ← alts.mapM fun (alt : TSyntax ``matchAlt) => match alt with
@@ -130,4 +114,42 @@ def declareExternalElaborator (kind : SyntaxNodeKind) (cat : Name) (patterns : A
       aux_def elabRules $(mkIdent k) : ExternalElabSignature :=
       fun stx _ => match stx with $alts:matchAlt* | _ => no_error_if_unused% throwUnsupportedSyntax)
 
+  elabCommand matcher_def
+
+
+@[inline] def externalIdentKind (cat : Ident) := Name.str cat.getId "process_ident"
+@[inline] def externalNumKind (cat : Ident) := Name.str cat.getId "process_num"
+
+
+/-- Add default elaborators common to every DSL. TODO: Scientific notation. Also since `num parsing is weird, right now it automatically treats them as Nats. Might be nice to parameterize this. -/
+def declareIdentifierElaborator (cat : Ident) : CommandElabM Unit := do
+
+    -- using a syntax quotation like `(syntax:1 ident : $cat) errors for some reason; construct manually
+  let kindName := externalIdentKind cat
+  let identSyntaxDecl : TSyntax `command := .mk (Lean.Syntax.node default `Lean.Parser.Command.syntax #[(Lean.Syntax.node default `null #[]), (Lean.Syntax.node default `null #[]), (Lean.Syntax.node default `Lean.Parser.Term.attrKind #[(Lean.Syntax.node default `null #[])]), (Lean.Syntax.atom default "syntax"), (Lean.Syntax.node default `null #[(Lean.Syntax.node default `Lean.Parser.precedence #[(Lean.Syntax.atom default ":"), (Lean.Syntax.node default `num #[(Lean.Syntax.atom default "1")])])]), (Lean.Syntax.node default `null #[(Lean.Syntax.node default `Lean.Parser.Command.namedName #[(Lean.Syntax.atom default "("), (Lean.Syntax.atom default "name"), (Lean.Syntax.atom default ":="), mkIdent kindName, (Lean.Syntax.atom default ")")])]), (Lean.Syntax.node default `null #[]), (Lean.Syntax.node default `null #[(Lean.Syntax.node default `Lean.Parser.Syntax.cat #[(mkIdent `ident), (Lean.Syntax.node default `null #[])])]), (Lean.Syntax.atom default ":"), cat])
+  elabCommand identSyntaxDecl -- identifiers are part of any DSL. How they are declared/managed is defined by the language in question.
+
+  let pat := ExprPattern.fvar (BinderName.var `ident)
+  addExternalEquivalence kindName cat.getId kindName pat [] [`ident] {}
+
+  let target : TSyntax `term := mkStrLit kindName.toString
+  let attr ← `(attrInstance| $(mkIdent `external_elab):ident $(← mkIdentFromRef kindName):ident)
+  let matcher_def : Syntax ← `(@[$attr]
+      aux_def elabRules $(mkIdent kindName) : ExternalElabSignature :=
+      fun stx _ => match stx.getArg 0 with | Syntax.ident _ _ _ _ => pure ( ( ⟨($target).toName⟩ : ExternalEquivalenceKey), ([] : List (Name × Syntax)), ([(`ident, stx.getArg 0)] : List (Name × Syntax)) ) | _ => no_error_if_unused% throwUnsupportedSyntax)
+  elabCommand matcher_def
+
+
+  let kindName := externalNumKind cat
+  let identSyntaxDecl : TSyntax `command := .mk (Lean.Syntax.node default `Lean.Parser.Command.syntax #[(Lean.Syntax.node default `null #[]), (Lean.Syntax.node default `null #[]), (Lean.Syntax.node default `Lean.Parser.Term.attrKind #[(Lean.Syntax.node default `null #[])]), (Lean.Syntax.atom default "syntax"), (Lean.Syntax.node default `null #[(Lean.Syntax.node default `Lean.Parser.precedence #[(Lean.Syntax.atom default ":"), (Lean.Syntax.node default `num #[(Lean.Syntax.atom default "1")])])]), (Lean.Syntax.node default `null #[(Lean.Syntax.node default `Lean.Parser.Command.namedName #[(Lean.Syntax.atom default "("), (Lean.Syntax.atom default "name"), (Lean.Syntax.atom default ":="), mkIdent kindName, (Lean.Syntax.atom default ")")])]), (Lean.Syntax.node default `null #[]), (Lean.Syntax.node default `null #[(Lean.Syntax.node default `Lean.Parser.Syntax.cat #[(mkIdent `num), (Lean.Syntax.node default `null #[])])]), (Lean.Syntax.atom default ":"), cat])
+  elabCommand identSyntaxDecl
+
+  let pat := ExprPattern.const ``Nat []
+  addExternalEquivalence kindName cat.getId kindName pat [] [] {}
+
+  let target : TSyntax `term := mkStrLit kindName.toString
+  let attr ← `(attrInstance| $(mkIdent `external_elab):ident $(← mkIdentFromRef kindName):ident)
+  let matcher_def : Syntax ← `(@[$attr]
+      aux_def elabRules $(mkIdent kindName) : ExternalElabSignature :=
+      fun stx _ => pure ( ( ⟨($target).toName⟩ : ExternalEquivalenceKey), ([] : List (Name × Syntax)), ([] : List (Name × Syntax)) ))
   elabCommand matcher_def

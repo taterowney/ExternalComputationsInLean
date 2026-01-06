@@ -12,7 +12,9 @@ structure ExternalEquivalence where
   stxNodeKind : SyntaxNodeKind
   exprPattern : ExprPattern
   variables : List Name
-deriving Inhabited, BEq
+  binderNames : List Name
+  MCtx : MetavarContext
+deriving Inhabited
 
 
 initialize externalEquivalenceCache : SimplePersistentEnvExtension (ExternalEquivalenceKey × ExternalEquivalence) (Std.HashMap ExternalEquivalenceKey ExternalEquivalence) ←
@@ -30,9 +32,9 @@ initialize externalEquivalenceCache : SimplePersistentEnvExtension (ExternalEqui
   }
 
 /-- Adds a new external equivalence to the cache. -/
-def addExternalEquivalence (name : Name) (syntaxCategory : Name) (stxNodeKind : SyntaxNodeKind) (exprPattern : ExprPattern) (variables : List Name) : CommandElabM Unit := do
+def addExternalEquivalence (name : Name) (syntaxCategory : Name) (stxNodeKind : SyntaxNodeKind) (exprPattern : ExprPattern) (variables : List Name) (binderNames : List Name) (MCtx : MetavarContext) : CommandElabM Unit := do
   let key : ExternalEquivalenceKey := { name }
-  let value : ExternalEquivalence := { syntaxCategory, stxNodeKind, exprPattern, variables }
+  let value : ExternalEquivalence := { syntaxCategory, stxNodeKind, exprPattern, variables, binderNames, MCtx }
   let env ← getEnv
   let newEnv := externalEquivalenceCache.addEntry env (key, value)
   setEnv newEnv
@@ -46,7 +48,7 @@ def getExternalEquivalence (name : ExternalEquivalenceKey) : CommandElabM (Optio
 
 
 /-- The signature for our (partial) elaboration functions. Normal `TermElab`s won't do here, since ideally we want to do some stuff in between recognizing which syntax is in the "blank" spots and fully elaborating it, which is hard to do without specifying everything up front when its created or spamming a bunch of `ref`s. -/
-abbrev ExternalElabSignature := Syntax → Option Expr → TermElabM (ExternalEquivalenceKey × List (Name × Syntax))
+abbrev ExternalElabSignature := Syntax → Option Expr → TermElabM (ExternalEquivalenceKey × List (Name × Syntax) × List (Name × Syntax))
 
 
 unsafe def mkTermElabAttributeUnsafe (ref : Name) : IO (KeyedDeclsAttribute ExternalElabSignature) :=

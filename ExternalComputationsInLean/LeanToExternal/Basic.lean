@@ -8,6 +8,7 @@ import ExternalComputationsInLean.Utils.Pattern
 import Lean.Parser.Command
 import Lean.Parser.Syntax
 import Lean.Parser.Term
+import Lean.Meta
 
 import ExternalComputationsInLean.LeanToExternal.Parsing
 import ExternalComputationsInLean.LeanToExternal.Elaboration
@@ -17,14 +18,25 @@ open Qq
 open Std.Internal.Parsec Std.Internal.Parsec.String
 open Std.Internal Parser Command Syntax Quote
 
+/-- Set up an external parser category for a DSL with this name, and add some default elaborators that are a part of every DSL. -/
+def initializeExternalCategory (cat : TSyntax `ident) : CommandElabM Unit := do
+  elabCommand (← `(declare_syntax_cat $cat))
 
-declare_syntax_cat externalcat
+  declareIdentifierElaborator cat
+
+
 
 /-- Set up parsing/elaboration rules for a specific external syntax pattern. -/
-def declareExternal (cat : Name) (patterns : Array (TSyntax `stx)) (target : ExprPattern) (variables : List Name) : CommandElabM Unit := do
-  let k ← declareExternalSyntax cat patterns
-  addExternalEquivalence k cat k target variables
-  declareExternalElaborator k cat (patterns.map (fun x => ⟨x⟩)) ⟨k⟩
+def declareExternal (cat : Name) (patterns : Array (TSyntax `stx)) (target : TSyntax `term) : CommandElabM Unit := do
+  let ⟨k, variableNames, binderNames⟩ ← declareExternalSyntax cat patterns -- Look through the external pattern, gather all the necessary variables, and declare a syntax node that parses that pattern
+  logInfo m!"Declared external syntax of kind {k} with variables {variableNames} and binders {binderNames}"
+
+  let (targetPat, mctx) ← liftTermElabM <| target.toPattern none variableNames binderNames -- Make an ExprPattern from the target expression. This checks to make sure the variable names line up with those in the syntax patterns.
+
+  addExternalEquivalence k cat k targetPat variableNames binderNames mctx -- Add information about this equivalence to the environment
+
+  declareExternalElaborator k cat patterns ⟨k⟩ -- Declare an elaborator for this external syntax
+
 
 /-- Parse an input string according to the external syntax category `cat`, returning the corresponding `Syntax` object. -/
 def parseExternal (cat : Name) (input : String) : TermElabM Syntax := do
@@ -34,26 +46,51 @@ def parseExternal (cat : Name) (input : String) : TermElabM Syntax := do
   let out := p.run ctx {env := e, options := default} (Parser.getTokenTable e) {cache := Parser.initCacheForInput input, pos := 0}
   if out.hasError then
     throwError m!"Syntax error in input: {out.errorMsg}"
+  if out.pos.byteIdx != input.length then
+    throwError m!"Syntax error in input: unexpected trailing characters {input.drop out.pos.byteIdx}"
   return out.stxStack.back
 
-
-/-- Elaborate a set of parsed external syntax, recursively filling in blanks. TODO: `elabContinuation` currently pretty simplistic: might want to add type filtration (requires delaboration?), interface with state/fvars, and maybe make it a parameter -/
+-- TODO: use to reconstruct mvars
+#check Lean.Meta.openAbstractMVarsResult
+/-- Elaborate a set of parsed external syntax, recursively filling in blanks. TODO: `elabContinuation` currently pretty simplistic: might want to add type filtration (requires delaboration/backtracking?), interface with state/fvars, and maybe make it a parameter -/
 partial def elabExternal (cat : Name) (input : Syntax) : TermElabM Expr := do
+  if input.getKind == (externalNumKind (mkIdent cat)) then -- Hack: `num`s are processed separately since atoms don't play nice with numbers, so just manually translate them to `Nat`s
+    match input.getArg 0 with
+    | .node _ `num contents =>
+      match contents.toList with
+      | .atom _ val :: _ =>
+        match val.toNat? with
+        | some n => return mkNatLit n
+        | _ => throwError m!"Internal assertion failed: malformed num syntax"
+      | _ => throwError m!"Internal assertion failed: malformed num syntax"
+    | _ => throwError m!"Internal assertion failed: malformed num syntax"
+
   match externalElabAttribute.getEntries (← getEnv) input.getKind with
   | [] => throwError m!"Internal assertion failed: no elaborator found for external syntax of kind '{input.getKind}'"
   | elab_fn :: _ =>
-    logInfo m!"Using external elaborator '{elab_fn.declName}' for syntax of kind '{input.getKind}'"
-    let (key, vals) ← elab_fn.value input none
+    let (key, blankContents, binderContents) ← elab_fn.value input none
     let some e ← liftCommandElabM <| getExternalEquivalence key | throwError m!"Internal assertion failed: no external equivalence found for key '{key.name}'"
-    if e.variables.length != vals.length then
-      throwError m!"Internal assertion failed: number of variables in external equivalence '{e.variables.length}' does not match number of provided values '{vals.length}'"
-    elabContinuation cat e vals
-where elabContinuation (cat : Name) (e : ExternalEquivalence) (vals : List (Name × Syntax)) : TermElabM Expr := do
-  let pat := e.exprPattern
-  let elaborated ← vals.mapM (fun (n, stx) => do
-    let out ← elabExternal cat stx
-    return (n, out))
-  pat.unify elaborated
+    if !e.variables.isPerm (blankContents.map Prod.fst) then
+      throwError m!"Internal assertion failed: variable names in external equivalence do not match provided values"
+
+    let binderNames ← binderContents.mapM (fun ⟨n, stx⟩ => do
+      match stx with
+      | Lean.Syntax.ident _ name _ _ => return (n, name.toName)
+      | _ => throwError m!"Internal assertion failed: binder syntax is not an identifier")
+    if !e.binderNames.isPerm (binderNames.map Prod.fst) then
+      throwError m!"Internal assertion failed: binder names in external equivalence do not match provided binders"
+
+    let binderNameCont := fun (n : Name) => match binderNames.find? (fun (bn, _) => bn == n) with
+      | some (_, name) => return name
+      | none => throwError m!"Unification failed: no value provided for binder blank '{n}'"
+    let out ← instantiateMVars (← e.exprPattern.unify' (blankCont blankContents) binderNameCont)
+    return out
+
+where blankCont (blankContents : List (Name × Syntax)) (name : Name) : TermElabM Expr := do
+  match blankContents.find? (fun (n, _) => n == name) with
+  | some (_, stx) => elabExternal cat stx
+  | none => throwError m!"Unification failed: no value provided for blank '{name}'"
+
 
 /-- Process (parse and elaborate) an input string according to the external syntax category `cat`. -/
 def processExternal (cat : Name) (input : String) : TermElabM Expr := do

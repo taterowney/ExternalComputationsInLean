@@ -5,21 +5,32 @@ import ExternalComputationsInLean.Utils.Syntax
 open Lean Elab Meta Term Expr
 open Qq
 
+inductive BinderName where
+  | fixed (name : Name)
+  | var (name : Name)
+  deriving Inhabited, Repr, BEq
+
+
 /-- Represents a partially specified expression. `blank`s represent unspecified parts that must be filled using other patterns. These are kept distinct from `mvar`s to carry information about their name, to not have to worry about moving MVar contexts around, and to ensure we don't try to run "fill-in-the-blank" on stuff that should just be inferred by `instantiateMVars` instead of specified manually. -/
 inductive ExprPattern
   | blank (id : MVarId) (type? : Option ExprPattern) (name : Name := Name.anonymous)
   | bvar (idx : Nat)
-  | fvar (id : FVarId)
+  | fvar (id : BinderName)
   | mvar (id : MVarId)
   | sort (l : Level)
   | const (declName : Name) (us : List Level)
   | app (f : ExprPattern) (arg : ExprPattern)
-  | lam (binderName : Name) (binderType : ExprPattern) (body : ExprPattern) (bi : BinderInfo)
-  | forallE (binderName : Name) (binderType : ExprPattern) (body : ExprPattern) (bi : BinderInfo)
-  | letE (binderName : Name) (binderType : ExprPattern) (value : ExprPattern) (body : ExprPattern) (nondep: Bool)
+  | lam (binderName : BinderName) (binderType : ExprPattern) (body : ExprPattern) (bi : BinderInfo)
+  | forallE (binderName : BinderName) (binderType : ExprPattern) (body : ExprPattern) (bi : BinderInfo)
+  | letE (binderName : BinderName) (binderType : ExprPattern) (value : ExprPattern) (body : ExprPattern) (nondep: Bool)
   | lit (l : Literal)
   | proj (structName : Name) (idx : Nat) (e : ExprPattern)
   deriving Inhabited, Repr
+
+instance : ToMessageData BinderName where
+  toMessageData
+    | .fixed name => m!"BinderName.fixed {name}"
+    | .var name   => m!"BinderName.var {name}"
 
 partial def ExprPattern.toMessageData (e : ExprPattern) : MessageData :=
   (match e with
@@ -28,7 +39,7 @@ partial def ExprPattern.toMessageData (e : ExprPattern) : MessageData :=
     | some t => m!"ExprPattern.blank {name} (type: {toMessageData t})"
     | none   => m!"ExprPattern.blank {name}"
   | .bvar idx => m!"ExprPattern.bvar {idx}"
-  | .fvar id => m!"ExprPattern.fvar {id.name}"
+  | .fvar id => m!"ExprPattern.fvar {id}"
   | .mvar id => m!"ExprPattern.mvar {id.name}"
   | .sort l => m!"ExprPattern.sort {l}"
   | .const declName us => m!"ExprPattern.const {declName} {us}"
@@ -44,6 +55,12 @@ partial def ExprPattern.toMessageData (e : ExprPattern) : MessageData :=
 instance : ToMessageData ExprPattern :=
   ⟨ExprPattern.toMessageData⟩
 
+instance : ToString BinderName :=
+  ⟨fun b =>
+    match b with
+    | .fixed name => s!"BinderName.fixed {name}"
+    | .var name   => s!"BinderName.var {name}"⟩
+
 partial def ExprPattern.toString (e : ExprPattern) : String :=
   (match e with
   | .blank _ type? name =>
@@ -51,7 +68,7 @@ partial def ExprPattern.toString (e : ExprPattern) : String :=
     | some t => s!"ExprPattern.blank {name} (type: {toString t})"
     | none   => s!"ExprPattern.blank {name}"
   | .bvar idx => s!"ExprPattern.bvar {idx}"
-  | .fvar id => s!"ExprPattern.fvar {id.name.toString}"
+  | .fvar id => s!"ExprPattern.fvar {id}"
   | .mvar id => s!"ExprPattern.mvar {id.name.toString}"
   | .sort l => s!"ExprPattern.sort {l}"
   | .const declName us => s!"ExprPattern.const {declName} {us}"
@@ -68,73 +85,201 @@ instance : ToString ExprPattern :=
   ⟨ExprPattern.toString⟩
 
 
-/-- Converts an `Expr` into an `ExprPattern`; assumes synthetically added metavariables represent blanks to fill in. Names of blanks are provided left to right through `varnames`. -/
-partial def Lean.Expr.toPattern (e : Expr) (varnames : List Name) : MetaM ExprPattern := do
-  return (← go e varnames).1
+instance : BEq MetavarKind where
+  beq
+    | MetavarKind.natural, MetavarKind.natural => true
+    | MetavarKind.synthetic, MetavarKind.synthetic => true
+    | MetavarKind.syntheticOpaque, MetavarKind.syntheticOpaque => true
+    | _, _ => false
+
+/-- Convert the name of an identifier into a `BinderName`, which may represent a fixed name or a name that depends on what is parsed externally. -/
+def Lean.Name.toBinderName (n : Name) (variableBinders : List Name): BinderName :=
+  match variableBinders.find? (fun bn => bn == n) with
+  | some _ => BinderName.var n
+  | none   => BinderName.fixed n
+
+-- /-- Converts an `Expr` into an `ExprPattern`; if `createBlanks?` is true, assumes synthetically added metavariables represent blanks to fill in. Names of blanks are provided left to right through `varnames`. -/
+-- partial def Lean.Expr.toPattern (e : Expr) (varnames : List Name) (variableBinders : List Name) (createBlanks? : Bool := true) : MetaM ExprPattern := do
+--   return (← go e varnames createBlanks?).1
+-- where
+--   go (e : Expr) (varnames : List Name) (cb? : Bool) : MetaM (ExprPattern × List Name) := do
+--     match e with
+--     | .mvar _ => do
+--       if ((← e.mvarId!.getKind) == MetavarKind.natural) || !cb? then
+--         return (.mvar (e.mvarId!), varnames)
+--       else
+--         let typ? : Option Expr ← try
+--           let x ← inferType e
+--           pure (some x)
+--         catch _ =>
+--           pure none
+
+--         match varnames with -- If the metavar is synthetic, we assume that it corresponds to a blank to be filled in
+--         | name :: rest => -- If we have variable names left to use, apply it, and treat the type as if it has no synthetic mvars
+--           logInfo m!"Triggered {name}: {e} with type {typ?}"
+--           let (typ?, rest) ← match typ? with
+--           | some t =>
+--             let res ← go t rest false
+--             pure (some res.1, res.2)
+--           | none => pure (none, rest)
+--           return (.blank (e.mvarId!) typ? name, rest)
+--         | _ => throwError "Not enough variable names provided to toPattern while processing {e}"
+--     | .const n ls => do return ⟨.const n ls, varnames⟩
+--     | .app f a => do
+--       let (f, varnames) ← go f varnames cb?
+--       let (a, varnames) ← go a varnames cb?
+--       return (.app f a, varnames)
+--     | .bvar i => do return ⟨.bvar i, varnames⟩
+--     | .fvar id => do return ⟨.fvar (id.name.toBinderName variableBinders), varnames⟩
+--     | .sort l => do return ⟨.sort l, varnames⟩
+--     | .forallE n t b bi => do
+--       let (t, varnames) ← go t varnames cb?
+--       let (b, varnames) ← go b varnames cb?
+--       return (.forallE (n.toBinderName variableBinders) t b bi, varnames)
+--     | .lam n t b bi => do
+--       let (t, varnames) ← go t varnames cb?
+--       let (b, varnames) ← go b varnames cb?
+--       return (.lam (n.toBinderName variableBinders) t b bi, varnames)
+--     | .letE n t v b bi => do
+--       let (t, varnames) ← go t varnames cb?
+--       let (v, varnames) ← go v varnames cb?
+--       let (b, varnames) ← go b varnames cb?
+--       return (.letE (n.toBinderName variableBinders) t v b bi, varnames)
+--     | .lit l => do return ⟨.lit l, varnames⟩
+--     | .proj s i e => do
+--       let (e, varnames) ← go e varnames cb?
+--       return (.proj s i e, varnames)
+--     | .mdata _ e' => go e' varnames cb? -- ignore metadata for now (IDK if there might be a future reason to keep it, but it'll just go out of scope anyway)
+
+
+/-- Converts an `Expr` into an `ExprPattern`; if `createBlanks?` is true, assumes synthetically added metavariables represent blanks to fill in. Names of blanks are provided left to right through `varnames`. -/
+partial def Lean.Expr.toPattern (e : Expr) (variableBinders : List Name) : MetaM ExprPattern := do
+  go e
 where
-  go : Expr → List Name → MetaM (ExprPattern × List Name) := fun e varnames =>
-  do
+  go (e : Expr) : MetaM ExprPattern := do
     match e with
     | .mvar _ => do
       match ← e.mvarId!.getKind with
-      | MetavarKind.natural => return (.mvar (e.mvarId!), varnames)
-      | _ =>
-        let typ? : Option Expr ← try
-          let x ← inferType e
-          pure (some x)
-        catch _ =>
-          pure none
+      | MetavarKind.syntheticOpaque =>
+        let tag ← e.mvarId!.getTag
+        if (`_blankName).isPrefixOf tag then
+          let tag := tag.updatePrefix .anonymous -- Extract the user-facing name of the blank
+          logInfo m!"Triggered blank: {e} with tag {tag}"
+          let typ? : Option Expr ← try
+            let x ← inferType e
+            pure (some x)
+          catch _ =>
+            pure none
 
-        match varnames with
-        | name :: rest =>
-          let (typ?, rest) ← match typ? with
+          let typ? ← match typ? with
           | some t =>
-            let res ← go t rest
-            pure (some res.1, res.2)
-          | none => pure (none, rest)
-          return (.blank (e.mvarId!) typ? name, rest)
-        | _ => throwError "Not enough variable names provided to toPattern"
-    | .const n ls => do return ⟨.const n ls, varnames⟩
+            let res ← go t
+            pure (some res)
+          | none => pure none
+          return .blank (e.mvarId!) typ? tag
+
+        else
+          return .mvar (e.mvarId!)
+      | _ => return .mvar (e.mvarId!)
+    | .const n ls => do return .const n ls
     | .app f a => do
-      let (f, varnames) ← go f varnames
-      let (a, varnames) ← go a varnames
-      return (.app f a, varnames)
-    | .bvar i => do return ⟨.bvar i, varnames⟩
-    | .fvar id => do return ⟨.fvar id, varnames⟩
-    | .sort l => do return ⟨.sort l, varnames⟩
+      let f ← go f
+      let a ← go a
+      return .app f a
+    | .bvar i => do return .bvar i
+    | .fvar id => do return .fvar (id.name.toBinderName variableBinders)
+    | .sort l => do return .sort l
     | .forallE n t b bi => do
-      let (t, varnames) ← go t varnames
-      let (b, varnames) ← go b varnames
-      return (.forallE n t b bi, varnames)
+      let t ← go t
+      let b ← go b
+      return .forallE (n.toBinderName variableBinders) t b bi
     | .lam n t b bi => do
-      let (t, varnames) ← go t varnames
-      let (b, varnames) ← go b varnames
-      return (.lam n t b bi, varnames)
+      let t ← go t
+      let b ← go b
+      return .lam (n.toBinderName variableBinders) t b bi
     | .letE n t v b bi => do
-      let (t, varnames) ← go t varnames
-      let (v, varnames) ← go v varnames
-      let (b, varnames) ← go b varnames
-      return (.letE n t v b bi, varnames)
-    | .lit l => do return ⟨.lit l, varnames⟩
+      let t ← go t
+      let v ← go v
+      let b ← go b
+      return .letE (n.toBinderName variableBinders) t v b bi
+    | .lit l => do return .lit l
     | .proj s i e => do
-      let (e, varnames) ← go e varnames
-      return (.proj s i e, varnames)
-    | .mdata _ e' => go e' varnames -- ignore metadata for now (IDK if there might be a future reason to keep it, but it'll just go out of scope anyway)
+      let e ← go e
+      return .proj s i e
+    | .mdata _ e' => go e' -- ignore metadata for now (IDK if there might be a future reason to keep it, but it'll just go out of scope anyway)
 
-/-- Convert a `Syntax` object into an `ExprPattern`, with unknown identifiers assumed to correspond to blanks to be filled. TODO: bound variables and such, make sure names of blanks correspond to identifiers in the syntax pattern. -/
-def Lean.Syntax.toPattern (stx : Syntax) (expectedType? : Option Expr) : TermElabM (ExprPattern × List Name) := do
+
+/-- Elaborates to a hole that's type-independent of binders around it. TODO: use user-facing name to eliminate the need for passing around lists of variable names? -/
+syntax (name := blankStx) "_blank" ident : term
+@[term_elab blankStx]
+def elabBlankStx : TermElab := fun stx expectedType? => do
+  withLCtx {} {} do
+    match expectedType? with
+    | some t => mkFreshExprSyntheticOpaqueMVar t (tag := `_blankName ++ stx.getArgs[1]!.getId)
+    | none => postponeElabTerm stx expectedType?
+
+
+/-- A somewhat suspicious way of identifying unbound identifiers, replacing them with holes, and returning their names, while leaving binders and bound variables in place. Adapted from `Lean.Elab.Term.withAutoBoundImplicit`. -/
+partial def repeatReplaceIdents (stx : Syntax) (expectedType? : Option Expr) : TermElabM (Expr × List Name) := do
+  withReader (fun ctx => { ctx with autoBoundImplicit := true, autoBoundImplicits := {} }) do
+    let rec loop (s : Lean.Elab.Term.SavedState) (stx : Syntax) (expectedType? : Option Expr) : TermElabM (Expr × List Name) := withIncRecDepth do
+      checkSystem "auto-implicit"
+      try
+        let ⟨e, _, _, _⟩ ← classifyMVars stx expectedType? -- I don't understand why, but this has slightly better behavior with regards to natural vs synthetic mvars than the normal `elabTerm`
+        return (e, [])
+      catch
+        | ex => match isAutoBoundImplicitLocalException? ex with
+          | some n =>
+            -- Restore state, declare `n`, and try again
+            s.restore (restoreInfo := true)
+            let out : TermElabM (Syntax × List Name) := Syntax.findAndReplaceM (fun stx => do
+              match stx with
+              | Lean.Syntax.ident _ val name _ =>
+                if name == n then
+                  -- logInfo m!"Replacing identifier {val} ({name}) with blank"
+                  let asIdent := mkIdent val.toName
+                  return some (← `( _blank $asIdent ), [val.toName])
+                else
+                  return none
+              | _ => pure none
+            ) stx
+            let (stx', newNames) ← out
+
+            let userName ←  match newNames with
+              | name :: _ => pure name
+              | _ => throwError m!"Internal error in `repeatReplaceIdents`: expected at least one name from findAndReplaceM"
+
+            let ⟨e, names⟩ ← loop (← saveState) stx' expectedType?
+            return (e, userName :: names)
+          | none   => throw ex
+    loop (← saveState) stx expectedType?
+
+
+/-- Convert a `Syntax` object into an `ExprPattern`, with unknown identifiers assumed to correspond to blanks to be filled. Also returns the context of the metavariables used in the pattern. `varnames` represents a list of the names of variables to be determined upon elaboration, while `variableBinders` is a list of the names of binders that are shared between Lean and the DSL. TODO: bound variables and such, make sure variable binders line up. -/
+def Lean.Syntax.toPattern (stx : Syntax) (expectedType? : Option Expr) (varnames : List Name) (variableBinders : List Name) : TermElabM (ExprPattern × MetavarContext) := do
   withoutModifyingElabMetaStateWithInfo do
-    let (stx, varnames) ← collectAndReplaceUnknownIdents stx
 
-    -- let e ← elabTerm stx expectedType?
-    let ⟨e, _, _, _⟩ ← classifyMVars stx expectedType? -- I don't understand why, but this has slightly better behavior with regards to natural vs synthetic mvars than the normal `elabTerm`
+    let (e, pat_varnames) ← repeatReplaceIdents stx expectedType?
+    logInfo m!"Extracted {e}"
+
+    unless varnames.isPerm pat_varnames do
+      throwError m!"Variable names do not match. Expected: {varnames}, got: {pat_varnames}"
 
     synthesizeSyntheticMVarsNoPostponing
-    return (← (← instantiateMVars e).toPattern varnames, varnames)
+
+    logInfo m!"Full : {← (← instantiateMVars e).toPattern variableBinders}"
+    -- let x ← getMCtx
+    return (← (← instantiateMVars e).toPattern variableBinders, ← getMCtx)
 
 /-- Convert a `Syntax` object into an `ExprPattern`, with unknown identifiers assumed to correspond to blanks to be filled. TODO: bound variables and such, make sure names of blanks correspond to identifiers in the syntax pattern. -/
-def Lean.TSyntax.toPattern (stx : TSyntax `term) (expectedType? : Option Expr) : TermElabM (ExprPattern × List Name) :=
-  stx.raw.toPattern expectedType?
+def Lean.TSyntax.toPattern (stx : TSyntax `term) (expectedType? : Option Expr) (varnames : List Name) (variableBinders : List Name) : TermElabM (ExprPattern × MetavarContext) :=
+  stx.raw.toPattern expectedType? varnames variableBinders
+
+
+def BinderName.quote (b : BinderName) : Q(BinderName) :=
+  match b with
+  | .fixed name => q(BinderName.fixed $name)
+  | .var name   => q(BinderName.var $name)
 
 def ExprPattern.quote (e : ExprPattern) : Q(ExprPattern) :=
   match e with
@@ -146,7 +291,9 @@ def ExprPattern.quote (e : ExprPattern) : Q(ExprPattern) :=
     | none =>
       q(ExprPattern.blank $id none $name)
   | .bvar i => q(ExprPattern.bvar $i)
-  | .fvar id => q(ExprPattern.fvar $id)
+  | .fvar id =>
+    let id : Q(BinderName) := id.quote
+    q(ExprPattern.fvar $id)
   | .mvar id => q(ExprPattern.mvar $id)
   | .sort l => q(ExprPattern.sort $l)
   | .const n ls => q(ExprPattern.const $n $ls)
@@ -157,15 +304,18 @@ def ExprPattern.quote (e : ExprPattern) : Q(ExprPattern) :=
   | .lam n t b bi =>
     let x : Q(ExprPattern) := t.quote
     let y : Q(ExprPattern) := b.quote
+    let n : Q(BinderName) := n.quote
     q(ExprPattern.lam $n $x $y $bi)
   | .forallE n t b bi =>
     let x : Q(ExprPattern) := t.quote
     let y : Q(ExprPattern) := b.quote
+    let n : Q(BinderName) := n.quote
     q(ExprPattern.forallE $n $x $y $bi)
   | .letE n t v b bi =>
     let x : Q(ExprPattern) := t.quote
     let y : Q(ExprPattern) := v.quote
     let z : Q(ExprPattern) := b.quote
+    let n : Q(BinderName) := n.quote
     q(ExprPattern.letE $n $x $y $z $bi)
   | .lit l => q(ExprPattern.lit $l)
   | .proj s i e =>
@@ -272,16 +422,24 @@ partial def ExprPattern.match {α : Type} (pat : ExprPattern) (e : Expr) (elabCo
   | .mvar _ =>
     return []
   | .fvar id =>
-    if e.isFVar && e.fvarId! == id then
-      return []
-    else
-      throwError "Pattern does not match"
+    match id with
+      | .fixed name =>
+      if e.isFVar && e.fvarId! == ⟨name⟩ then
+        return []
+      else
+        throwError "Pattern does not match"
+      | _ => throwError "match: this pattern is not supported"
   | _ => throwError "matchAndFormat: this pattern is not supported"
+
+def BinderName.toName (b : BinderName) : MetaM Name := do
+  match b with
+  | .fixed name => return name
+  | .var name   => throwError m!"This pattern contains identifier variables that haven't been resolved: {name}"
 
 partial def ExprPattern.toExpr (pat : ExprPattern) : MetaM Expr := do
   match pat with
   | .bvar i => return mkBVar i
-  | .fvar id => return mkFVar id
+  | .fvar id => return mkFVar ⟨← id.toName⟩
   | .mvar id => return mkMVar id
   | .sort l => return mkSort l
   | .const n ls => return mkConst n ls
@@ -289,27 +447,13 @@ partial def ExprPattern.toExpr (pat : ExprPattern) : MetaM Expr := do
     let f' ← f.toExpr
     let a' ← a.toExpr
     return mkApp f' a'
-  | .lam n t b bi => return mkLambda n bi (← t.toExpr) (← b.toExpr)
-  | .forallE n t b bi => return mkForall n bi (← t.toExpr) (← b.toExpr)
-  | .letE n t v b nondep => return mkLet n (← t.toExpr) (← v.toExpr) (← b.toExpr) nondep
+  | .lam n t b bi => return mkLambda (← n.toName) bi (← t.toExpr) (← b.toExpr)
+  | .forallE n t b bi => return mkForall (← n.toName) bi (← t.toExpr) (← b.toExpr)
+  | .letE n t v b nondep => return mkLet (← n.toName) (← t.toExpr) (← v.toExpr) (← b.toExpr) nondep
   | .lit l => return mkLit l
   | .proj s i e => return mkProj s i (← e.toExpr)
-  | _ => throwError "toExpr: this pattern is not supported"
+  | _ => throwError "toExpr: this pattern contains blanks that haven't been fully resolved."
 
--- attribute [ext] MVarId
--- instance : DecidableEq MVarId :=
---   fun a b => if h : a.name == b.name then .isTrue (by ext; simp_all) else .isFalse (by grind)
-
--- def ExprPattern.getBlanks (pat : ExprPattern) : Finset MVarId :=
---   match pat with
---   | .blank id => {id}
---   | .blankOfType id t => {id} ∪ t.getBlanks
---   | .app f a => f.getBlanks ∪ a.getBlanks
---   | .lam _ t b _ => t.getBlanks ∪ b.getBlanks
---   | .forallE _ t b _ => t.getBlanks ∪ b.getBlanks
---   | .letE _ t v b _ => t.getBlanks ∪ v.getBlanks ∪ b.getBlanks
---   | .proj _ _ e => e.getBlanks
---   | _ => ∅
 
 def ExprPattern.getBlanks (pat : ExprPattern) : List Name :=
   match pat with
@@ -336,23 +480,117 @@ instance : BEq ExprPattern where
   beq e1 e2 :=
     e1.isEquivalent e2
 
-partial def ExprPattern.unify (pat : ExprPattern) (blanks : List (Name × Expr)) : TermElabM Expr :=
+
+-- def BinderName.unify (b : BinderName) (identBlanks : List (Name × Name)) : TermElabM Name := do
+--   match b with
+--   | .fixed name => return name
+--   | .var name =>
+--     match identBlanks.find? (fun (n, _) => n == name) with
+--     | some (_, resolvedName) => return resolvedName
+--     | none => throwError m!"Unification failed: no value provided for identifier blank '{name}'"
+
+
+-- /-- Turn an `ExprPattern` into an `Expr` by filling in the blanks with the provided expressions. -/
+-- partial def ExprPattern.unify (pat : ExprPattern) (blanks : List (Name × Expr)) (identBlanks : List (Name × Name)) : TermElabM Expr :=
+--   match pat with
+--   | .bvar i => return mkBVar i
+--   | .fvar id => do
+--     let lctx ← getLCtx
+--     let unified ← id.unify identBlanks
+--     match lctx.findFromUserName? unified with
+--     | some ldecl => return mkFVar ldecl.fvarId
+--     | none => throwError m!"Unification failed: no local declaration found for fvar '{unified}'"
+--   | .mvar id => do
+--     logInfo m!"Creating mvar for {id}"
+--     -- mkFreshExprMVarWithId id
+--     mkFreshExprMVar none
+--   | .sort l => return mkSort l
+--   | .const n ls => return mkConst n ls
+--   | .app f a => do
+--     let f' ← f.unify blanks identBlanks
+--     let a' ← a.unify blanks identBlanks
+--     return mkApp f' a'
+--   | .lam n t b bi => do
+--     let binderName ← n.unify identBlanks
+--     let binderType ← t.unify blanks identBlanks
+--     let binderExpr ← mkFreshExprSyntheticOpaqueMVar binderType binderName
+--     mkLambdaFVars #[binderExpr] (← b.unify blanks identBlanks) (binderInfoForMVars := bi)
+--     -- return mkLambda (← n.unify identBlanks) bi (← t.unify blanks identBlanks) (← b.unify blanks identBlanks)
+--   | .forallE n t b bi => do
+--     let binderName ← n.unify identBlanks
+--     let binderType ← t.unify blanks identBlanks
+--     let binderExpr ← mkFreshExprSyntheticOpaqueMVar binderType binderName
+--     mkForallFVars #[binderExpr] (← b.unify blanks identBlanks) (binderInfoForMVars := bi)
+--     -- return mkForall (← n.unify identBlanks) bi (← t.unify blanks identBlanks) (← b.unify blanks identBlanks)
+--   | .letE n t v b nondep => do
+--     let binderName ← n.unify identBlanks
+--     let binderType ← t.unify blanks identBlanks
+--     let valueExpr ← v.unify blanks identBlanks
+--     withLetDecl binderName binderType valueExpr fun binderExpr => do
+--       mkLetFVars #[binderExpr] (← b.unify blanks identBlanks) nondep
+--     -- return mkLet (← n.unify identBlanks) (← t.unify blanks identBlanks) (← v.unify blanks identBlanks) (← b.unify blanks identBlanks) nondep
+--   | .lit l => return mkLit l
+--   | .proj s i e => return mkProj s i (← e.unify blanks identBlanks)
+--   | .blank _ _ name =>
+--     match blanks.find? (fun (n, _) => n == name) with
+--     | some (_, expr) => return expr
+--     | none => throwError m!"Unification failed: no value provided for blank '{name}'"
+
+
+def BinderName.unify' (b : BinderName) (identBlankContinuation : Name → TermElabM Name) : TermElabM Name := do
+  match b with
+  | .fixed name => return name
+  | .var name   =>
+    identBlankContinuation name
+
+/-- Turn an `ExprPattern` into an `Expr` by filling in the blanks with the provided expressions. -/
+partial def ExprPattern.unify' (pat : ExprPattern) (blankContinuation : Name → TermElabM Expr) (identBlankContinuation : Name → TermElabM Name) : TermElabM Expr :=
   match pat with
   | .bvar i => return mkBVar i
-  | .fvar id => return mkFVar id
-  | .mvar id => return mkMVar id
+  | .fvar id => do
+    let lctx ← getLCtx
+    let unified ← id.unify' identBlankContinuation
+    match lctx.findFromUserName? unified with
+    | some ldecl => return mkFVar ldecl.fvarId
+    | none => throwError m!"Unification failed: no local declaration found for fvar '{unified}'"
+  | .mvar id => do
+    logInfo m!"Creating mvar for {id.name}"
+    mkFreshExprMVarWithId id
   | .sort l => return mkSort l
   | .const n ls => return mkConst n ls
   | .app f a => do
-    let f' ← f.unify blanks
-    let a' ← a.unify blanks
+    let f' ← f.unify' blankContinuation identBlankContinuation
+    let a' ← a.unify' blankContinuation identBlankContinuation
     return mkApp f' a'
-  | .lam n t b bi => return mkLambda n bi (← t.unify blanks) (← b.unify blanks)
-  | .forallE n t b bi => return mkForall n bi (← t.unify blanks) (← b.unify blanks)
-  | .letE n t v b nondep => return mkLet n (← t.unify blanks) (← v.unify blanks) (← b.unify blanks) nondep
+  | .lam n t b bi => do
+    let binderName ← n.unify' identBlankContinuation
+    let binderType ← t.unify' blankContinuation identBlankContinuation
+    withLocalDecl binderName bi binderType fun binderExpr => do
+      mkLambdaFVars #[binderExpr] (← b.unify' blankContinuation identBlankContinuation) (binderInfoForMVars := bi)
+  | .forallE n t b bi => do
+    let binderName ← n.unify' identBlankContinuation
+    let binderType ← t.unify' blankContinuation identBlankContinuation
+    withLocalDecl binderName bi binderType fun binderExpr => do
+      mkForallFVars #[binderExpr] (← b.unify' blankContinuation identBlankContinuation) (binderInfoForMVars := bi)
+  | .letE n t v b nondep => do
+    let binderName ← n.unify' identBlankContinuation
+    let binderType ← t.unify' blankContinuation identBlankContinuation
+    let valueExpr ← v.unify' blankContinuation identBlankContinuation
+    withLetDecl binderName binderType valueExpr fun binderExpr => do
+      let body ← b.unify' blankContinuation identBlankContinuation
+      let out ← mkLetFVars #[binderExpr] body nondep
+      try
+        unless ← isDefEq (← inferType out) (← inferType body) do
+          throwError m!"Type mismatch in let binding: {← inferType out} vs {← inferType body}"
+      catch _ =>
+        pure ()
+      try
+        unless ← isDefEq (← inferType binderExpr) (← inferType valueExpr) do
+          throwError m!"Type mismatch in let binding: {← inferType out} vs {← inferType body}"
+      catch _ =>
+        pure ()
+      return out
   | .lit l => return mkLit l
-  | .proj s i e => return mkProj s i (← e.unify blanks)
+  | .proj s i e => return mkProj s i (← e.unify' blankContinuation identBlankContinuation)
   | .blank _ _ name =>
-    match blanks.find? (fun (n, _) => n == name) with
-    | some (_, expr) => return expr
-    | none => throwError m!"Unification failed: no value provided for blank '{name}'"
+    blankContinuation name
