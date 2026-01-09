@@ -4,7 +4,7 @@ import Std.Internal.Parsec.Basic
 import Std.Internal.Parsec.String
 import Qq.Macro
 import Lean.Elab.Command
-import ExternalComputationsInLean.Utils.Pattern
+import ExternalComputationsInLean.Utils.Pattern2
 import Lean.Parser.Command
 import Lean.Parser.Syntax
 import Lean.Parser.Term
@@ -29,11 +29,11 @@ def initializeExternalCategory (cat : TSyntax `ident) : CommandElabM Unit := do
 /-- Set up parsing/elaboration rules for a specific external syntax pattern. -/
 def declareExternal (cat : Name) (patterns : Array (TSyntax `stx)) (target : TSyntax `term) : CommandElabM Unit := do
   let ⟨k, variableNames, binderNames⟩ ← declareExternalSyntax cat patterns -- Look through the external pattern, gather all the necessary variables, and declare a syntax node that parses that pattern
-  logInfo m!"Declared external syntax of kind {k} with variables {variableNames} and binders {binderNames}"
 
-  let (targetPat, mctx) ← liftTermElabM <| target.toPattern none variableNames binderNames -- Make an ExprPattern from the target expression. This checks to make sure the variable names line up with those in the syntax patterns.
+  let targetPat ← liftTermElabM <| target.toPattern none variableNames.toArray binderNames.toArray -- Make an ExprPattern from the target expression. This checks to make sure the variable names line up with those in the syntax patterns.
+  -- logInfo m!"Declared external equivalence: {targetPat.expr.expr}"
 
-  addExternalEquivalence k cat k targetPat variableNames binderNames mctx -- Add information about this equivalence to the environment
+  addExternalEquivalence k cat k targetPat -- Add information about this equivalence to the environment
 
   declareExternalElaborator k cat patterns ⟨k⟩ -- Declare an elaborator for this external syntax
 
@@ -50,8 +50,7 @@ def parseExternal (cat : Name) (input : String) : TermElabM Syntax := do
     throwError m!"Syntax error in input: unexpected trailing characters {input.drop out.pos.byteIdx}"
   return out.stxStack.back
 
--- TODO: use to reconstruct mvars
-#check Lean.Meta.openAbstractMVarsResult
+
 /-- Elaborate a set of parsed external syntax, recursively filling in blanks. TODO: `elabContinuation` currently pretty simplistic: might want to add type filtration (requires delaboration/backtracking?), interface with state/fvars, and maybe make it a parameter -/
 partial def elabExternal (cat : Name) (input : Syntax) : TermElabM Expr := do
   if input.getKind == (externalNumKind (mkIdent cat)) then -- Hack: `num`s are processed separately since atoms don't play nice with numbers, so just manually translate them to `Nat`s
@@ -70,20 +69,22 @@ partial def elabExternal (cat : Name) (input : Syntax) : TermElabM Expr := do
   | elab_fn :: _ =>
     let (key, blankContents, binderContents) ← elab_fn.value input none
     let some e ← liftCommandElabM <| getExternalEquivalence key | throwError m!"Internal assertion failed: no external equivalence found for key '{key.name}'"
-    if !e.variables.isPerm (blankContents.map Prod.fst) then
+
+    if !e.exprPattern.vars.toList.isPerm (blankContents.map Prod.fst) then
       throwError m!"Internal assertion failed: variable names in external equivalence do not match provided values"
 
     let binderNames ← binderContents.mapM (fun ⟨n, stx⟩ => do
       match stx with
       | Lean.Syntax.ident _ name _ _ => return (n, name.toName)
       | _ => throwError m!"Internal assertion failed: binder syntax is not an identifier")
-    if !e.binderNames.isPerm (binderNames.map Prod.fst) then
+    if !e.exprPattern.binderVars.toList.isPerm (binderNames.map Prod.fst) then
       throwError m!"Internal assertion failed: binder names in external equivalence do not match provided binders"
 
     let binderNameCont := fun (n : Name) => match binderNames.find? (fun (bn, _) => bn == n) with
       | some (_, name) => return name
       | none => throwError m!"Unification failed: no value provided for binder blank '{n}'"
-    let out ← instantiateMVars (← e.exprPattern.unify' (blankCont blankContents) binderNameCont)
+    let out ← instantiateMVars (← e.exprPattern.unify (blankCont blankContents) binderNameCont)
+    -- synthesizeSyntheticMVarsNoPostponing
     return out
 
 where blankCont (blankContents : List (Name × Syntax)) (name : Name) : TermElabM Expr := do

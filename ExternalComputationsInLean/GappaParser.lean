@@ -4,9 +4,8 @@ import Std.Internal.Parsec
 import Std.Internal.Parsec.Basic
 import Std.Internal.Parsec.String
 import Qq.Macro
-import ExternalComputationsInLean.Pattern
 import Mathlib.Data.Finset.Insert
-import ExternalComputationsInLean.Elaborator
+import ExternalComputationsInLean.ExternalToLean.ElaboratorOld
 import Lean.Elab.Command
 import ExternalComputationsInLean.Pattern
 import Mathlib.Algebra.Order.Round

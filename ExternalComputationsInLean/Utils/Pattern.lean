@@ -98,61 +98,8 @@ def Lean.Name.toBinderName (n : Name) (variableBinders : List Name): BinderName 
   | some _ => BinderName.var n
   | none   => BinderName.fixed n
 
--- /-- Converts an `Expr` into an `ExprPattern`; if `createBlanks?` is true, assumes synthetically added metavariables represent blanks to fill in. Names of blanks are provided left to right through `varnames`. -/
--- partial def Lean.Expr.toPattern (e : Expr) (varnames : List Name) (variableBinders : List Name) (createBlanks? : Bool := true) : MetaM ExprPattern := do
---   return (← go e varnames createBlanks?).1
--- where
---   go (e : Expr) (varnames : List Name) (cb? : Bool) : MetaM (ExprPattern × List Name) := do
---     match e with
---     | .mvar _ => do
---       if ((← e.mvarId!.getKind) == MetavarKind.natural) || !cb? then
---         return (.mvar (e.mvarId!), varnames)
---       else
---         let typ? : Option Expr ← try
---           let x ← inferType e
---           pure (some x)
---         catch _ =>
---           pure none
 
---         match varnames with -- If the metavar is synthetic, we assume that it corresponds to a blank to be filled in
---         | name :: rest => -- If we have variable names left to use, apply it, and treat the type as if it has no synthetic mvars
---           logInfo m!"Triggered {name}: {e} with type {typ?}"
---           let (typ?, rest) ← match typ? with
---           | some t =>
---             let res ← go t rest false
---             pure (some res.1, res.2)
---           | none => pure (none, rest)
---           return (.blank (e.mvarId!) typ? name, rest)
---         | _ => throwError "Not enough variable names provided to toPattern while processing {e}"
---     | .const n ls => do return ⟨.const n ls, varnames⟩
---     | .app f a => do
---       let (f, varnames) ← go f varnames cb?
---       let (a, varnames) ← go a varnames cb?
---       return (.app f a, varnames)
---     | .bvar i => do return ⟨.bvar i, varnames⟩
---     | .fvar id => do return ⟨.fvar (id.name.toBinderName variableBinders), varnames⟩
---     | .sort l => do return ⟨.sort l, varnames⟩
---     | .forallE n t b bi => do
---       let (t, varnames) ← go t varnames cb?
---       let (b, varnames) ← go b varnames cb?
---       return (.forallE (n.toBinderName variableBinders) t b bi, varnames)
---     | .lam n t b bi => do
---       let (t, varnames) ← go t varnames cb?
---       let (b, varnames) ← go b varnames cb?
---       return (.lam (n.toBinderName variableBinders) t b bi, varnames)
---     | .letE n t v b bi => do
---       let (t, varnames) ← go t varnames cb?
---       let (v, varnames) ← go v varnames cb?
---       let (b, varnames) ← go b varnames cb?
---       return (.letE (n.toBinderName variableBinders) t v b bi, varnames)
---     | .lit l => do return ⟨.lit l, varnames⟩
---     | .proj s i e => do
---       let (e, varnames) ← go e varnames cb?
---       return (.proj s i e, varnames)
---     | .mdata _ e' => go e' varnames cb? -- ignore metadata for now (IDK if there might be a future reason to keep it, but it'll just go out of scope anyway)
-
-
-/-- Converts an `Expr` into an `ExprPattern`; if `createBlanks?` is true, assumes synthetically added metavariables represent blanks to fill in. Names of blanks are provided left to right through `varnames`. -/
+/-- Converts an `Expr` into an `ExprPattern`. Names of blanks are provided left to right through `varnames`. -/
 partial def Lean.Expr.toPattern (e : Expr) (variableBinders : List Name) : MetaM ExprPattern := do
   go e
 where
@@ -209,7 +156,7 @@ where
     | .mdata _ e' => go e' -- ignore metadata for now (IDK if there might be a future reason to keep it, but it'll just go out of scope anyway)
 
 
-/-- Elaborates to a hole that's type-independent of binders around it. TODO: use user-facing name to eliminate the need for passing around lists of variable names? -/
+/-- Elaborates to a hole that's type-independent of binders around it. -/
 syntax (name := blankStx) "_blank" ident : term
 @[term_elab blankStx]
 def elabBlankStx : TermElab := fun stx expectedType? => do

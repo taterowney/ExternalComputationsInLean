@@ -1,5 +1,5 @@
 import Lean
-import ExternalComputationsInLean.Utils.Pattern
+import ExternalComputationsInLean.Utils.Pattern2
 open Lean Meta Elab Command
 
 structure ExternalEquivalenceKey where
@@ -11,9 +11,6 @@ structure ExternalEquivalence where
   syntaxCategory : Name
   stxNodeKind : SyntaxNodeKind
   exprPattern : ExprPattern
-  variables : List Name
-  binderNames : List Name
-  MCtx : MetavarContext
 deriving Inhabited
 
 
@@ -32,9 +29,9 @@ initialize externalEquivalenceCache : SimplePersistentEnvExtension (ExternalEqui
   }
 
 /-- Adds a new external equivalence to the cache. -/
-def addExternalEquivalence (name : Name) (syntaxCategory : Name) (stxNodeKind : SyntaxNodeKind) (exprPattern : ExprPattern) (variables : List Name) (binderNames : List Name) (MCtx : MetavarContext) : CommandElabM Unit := do
+def addExternalEquivalence (name : Name) (syntaxCategory : Name) (stxNodeKind : SyntaxNodeKind) (exprPattern : ExprPattern) : CommandElabM Unit := do
   let key : ExternalEquivalenceKey := { name }
-  let value : ExternalEquivalence := { syntaxCategory, stxNodeKind, exprPattern, variables, binderNames, MCtx }
+  let value : ExternalEquivalence := { syntaxCategory, stxNodeKind, exprPattern }
   let env ← getEnv
   let newEnv := externalEquivalenceCache.addEntry env (key, value)
   setEnv newEnv
