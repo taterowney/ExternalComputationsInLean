@@ -1,5 +1,5 @@
 import Lean
-import ExternalComputationsInLean.Utils.Pattern2
+import ExternalComputationsInLean.Utils.Pattern
 open Lean Meta Elab Command
 
 structure ExternalEquivalenceKey where
@@ -11,6 +11,10 @@ structure ExternalEquivalence where
   syntaxCategory : Name
   stxNodeKind : SyntaxNodeKind
   exprPattern : ExprPattern
+  rawSyntaxPatterns : Array Syntax
+  isInjective : Bool
+  isSurjective : Bool
+  postprocess : Option Expr := none
 deriving Inhabited
 
 
@@ -29,9 +33,9 @@ initialize externalEquivalenceCache : SimplePersistentEnvExtension (ExternalEqui
   }
 
 /-- Adds a new external equivalence to the cache. -/
-def addExternalEquivalence (name : Name) (syntaxCategory : Name) (stxNodeKind : SyntaxNodeKind) (exprPattern : ExprPattern) : CommandElabM Unit := do
+def addExternalEquivalence (name : Name) (syntaxCategory : Name) (stxNodeKind : SyntaxNodeKind) (exprPattern : ExprPattern) (rawSyntaxPatterns : Array Syntax) (isInjective : Bool) (isSurjective : Bool) (postprocess : Option Expr := none) : CommandElabM Unit := do
   let key : ExternalEquivalenceKey := { name }
-  let value : ExternalEquivalence := { syntaxCategory, stxNodeKind, exprPattern }
+  let value : ExternalEquivalence := { syntaxCategory, stxNodeKind, exprPattern, rawSyntaxPatterns, isInjective, isSurjective, postprocess }
   let env ← getEnv
   let newEnv := externalEquivalenceCache.addEntry env (key, value)
   setEnv newEnv
@@ -42,6 +46,14 @@ def getExternalEquivalence (name : ExternalEquivalenceKey) : CommandElabM (Optio
   let cache := externalEquivalenceCache.getState env
   return cache.get? name
 
+def getExternalEquivalencesForCategory (cat : Name) : CommandElabM (Array (ExternalEquivalence)) := do
+  let env ← getEnv
+  let cache := externalEquivalenceCache.getState env
+  let mut out := #[]
+  for (_, v) in cache.toList do
+    if v.syntaxCategory == cat then
+      out := out.push v
+  return out
 
 
 /-- The signature for our (partial) elaboration functions. Normal `TermElab`s won't do here, since ideally we want to do some stuff in between recognizing which syntax is in the "blank" spots and fully elaborating it, which is hard to do without specifying everything up front when its created or spamming a bunch of `ref`s. -/

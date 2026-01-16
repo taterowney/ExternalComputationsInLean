@@ -4,7 +4,7 @@ import Std.Internal.Parsec.Basic
 import Std.Internal.Parsec.String
 import Qq.Macro
 import Lean.Elab.Command
-import ExternalComputationsInLean.Utils.Pattern2
+import ExternalComputationsInLean.Utils.Pattern
 import Lean.Parser.Command
 import Lean.Parser.Syntax
 import Lean.Parser.Term

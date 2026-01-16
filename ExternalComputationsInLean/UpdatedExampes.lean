@@ -1,4 +1,4 @@
-import ExternalComputationsInLean.Basic
+import ExternalComputationsInLean.Command
 import Mathlib.Algebra.Order.Round
 import Mathlib.Data.Real.Basic
 import Mathlib.Data.Real.Sqrt
@@ -59,6 +59,7 @@ external C_arithmetic where
   x ">>" y <==> (x:Int32) >>> (y:Int32)
   "(" x ")" <==> Int32.ofNat x
   "return" x ";" <==> x
+  -- "test" $n $m x <==> let n := fun m => x; x
 
 
 
@@ -81,8 +82,6 @@ def code2 := process C_arithmetic
 }"
 
 #print code2
-
-
 
 example (x : Int32) (hx : x < 2^30 - 1) : code2 x = 4*x + 1 := by
   simp [code2]
